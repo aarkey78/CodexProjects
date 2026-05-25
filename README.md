@@ -7,7 +7,8 @@ This is engineering infrastructure, not financial advice. Start in paper mode an
 ## Architecture
 
 - `orchestration/`: Vibe-Trading adapter plus local multi-agent coordinator.
-- `agents/`: momentum, volume, technical, sentiment, risk, execution, journal, and options-flow placeholder agents.
+- `agents/`: momentum, volume, technical, sentiment, options-flow, risk, execution, and journal agents.
+- `data/options_client.py`: Alpaca options chain, IV, Greeks, and derived activity scoring.
 - `data/`: Alpha Vantage client, Alpaca client, Redis/local cache, and technical indicators.
 - `strategies/`: momentum, breakout, gap-and-go, and Pine Script export.
 - `backtesting/`: event-driven engine, metrics, and walk-forward optimizer.
@@ -71,6 +72,7 @@ When delegation fails or is not configured, local agents continue to run.
 curl http://localhost:8000/health
 curl "http://localhost:8000/scan?symbols=NVDA,TSLA,AMD"
 curl "http://localhost:8000/signals/NVDA"
+curl "http://localhost:8000/options/AAPL?expiration_days=45&option_type=all&min_unusual_score=60"
 curl -X POST http://localhost:8000/backtest -H "Content-Type: application/json" -d "{\"symbol\":\"NVDA\"}"
 ```
 
@@ -102,6 +104,25 @@ SELL can trigger when:
 - RSI divergence is detected
 - Stop loss is triggered by risk controls
 
+## Options Chain And Activity Scoring
+
+The `/options/{symbol}` endpoint fetches Alpaca option-chain snapshots and returns:
+
+- Calls and puts by expiration and strike
+- Bid, ask, mid, spread, and quote size
+- Latest trade price and size when available
+- Implied volatility and Greeks
+- Derived unusual activity score
+- Call/put premium and activity imbalance
+
+Example:
+
+```bash
+curl "http://localhost:8000/options/TSLA?option_type=call&expiration_days=30&min_iv=0.2&max_delta=0.8&min_unusual_score=50"
+```
+
+The dashboard includes the same filters in the sidebar. Activity scoring uses snapshot quote size, latest trade size, premium proxy, IV percentile, spread quality, and Greeks. It is useful for screening but should not be treated as full OPRA tape reconstruction.
+
 ## Testing
 
 ```bash
@@ -109,4 +130,3 @@ pytest
 ```
 
 The current tests cover indicators, risk sizing, performance metrics, and signal generation. Add integration tests with API keys only against paper trading.
-

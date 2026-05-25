@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import date, timedelta
 from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
@@ -9,12 +10,14 @@ from pydantic import BaseModel, Field
 from alerts.discord_alerts import DiscordAlerts
 from alerts.telegram_alerts import TelegramAlerts
 from agents.execution_agent import ExecutionAgent
+from agents.options_flow_agent import OptionsFlowAgent
 from backtesting.engine import BacktestConfig, BacktestEngine
 from config.logging import configure_logging
 from config.settings import get_settings
 from data.alpha_vantage_client import AlphaVantageClient
 from data.alpaca_client import AlpacaTradingClient, BrokerOrder
 from data.market_cache import MarketCache
+from data.options_client import AlpacaOptionsClient, OptionsChainFilters
 from orchestration.vibe_trading import VibeTradingOrchestrator
 
 settings = get_settings()
@@ -22,6 +25,8 @@ configure_logging(settings.log_level)
 cache = MarketCache(settings.redis_url)
 market_data = AlphaVantageClient(settings, cache)
 broker = AlpacaTradingClient(settings)
+options_client = AlpacaOptionsClient(settings)
+options_agent = OptionsFlowAgent(options_client)
 orchestrator = VibeTradingOrchestrator(settings, market_data)
 execution_agent = ExecutionAgent(broker)
 telegram_alerts = TelegramAlerts(settings)
@@ -65,12 +70,12 @@ async def scan(symbols: str | None = Query(default=None, description="Comma-sepa
 
 
 @app.get("/signals/{symbol}")
-async def signal(symbol: str, execute: bool = False, background_tasks: BackgroundTasks | None = None) -> dict:
+async def signal(symbol: str, background_tasks: BackgroundTasks, execute: bool = False) -> dict:
     trade_signal = await orchestrator.generate_signal(symbol.upper())
     execution_result = None
     if execute and trade_signal.action in {"BUY", "SELL"}:
         execution_result = await execution_agent.analyze(trade_signal, execute=True)
-    if trade_signal.action in {"BUY", "SELL"} and background_tasks is not None:
+    if trade_signal.action in {"BUY", "SELL"}:
         background_tasks.add_task(telegram_alerts.send_signal, trade_signal)
         background_tasks.add_task(discord_alerts.send_signal, trade_signal)
     payload = orchestrator.serialize_signal(trade_signal)
@@ -87,6 +92,45 @@ async def account() -> dict:
 @app.get("/positions")
 async def positions() -> list[dict]:
     return await broker.positions()
+
+
+@app.get("/options/{symbol}")
+async def options_chain(
+    symbol: str,
+    option_type: Literal["all", "call", "put"] = "all",
+    expiration_days: int = Query(default=45, ge=1, le=730),
+    expiration_date_gte: date | None = None,
+    expiration_date_lte: date | None = None,
+    strike_min: float | None = Query(default=None, gt=0),
+    strike_max: float | None = Query(default=None, gt=0),
+    min_iv: float | None = Query(default=None, ge=0),
+    max_iv: float | None = Query(default=None, ge=0),
+    min_delta: float | None = Query(default=None, ge=-1, le=1),
+    max_delta: float | None = Query(default=None, ge=-1, le=1),
+    min_gamma: float | None = Query(default=None, ge=0),
+    max_gamma: float | None = Query(default=None, ge=0),
+    min_unusual_score: float = Query(default=0.0, ge=0, le=100),
+    limit: int = Query(default=250, ge=1, le=2000),
+) -> dict:
+    filters = OptionsChainFilters(
+        option_type=option_type,
+        expiration_date_gte=expiration_date_gte or date.today(),
+        expiration_date_lte=expiration_date_lte or (date.today() + timedelta(days=expiration_days)),
+        strike_min=strike_min,
+        strike_max=strike_max,
+        min_iv=min_iv,
+        max_iv=max_iv,
+        min_delta=min_delta,
+        max_delta=max_delta,
+        min_gamma=min_gamma,
+        max_gamma=max_gamma,
+        min_unusual_score=min_unusual_score,
+        limit=limit,
+    )
+    payload = await options_client.get_chain(symbol.upper(), filters)
+    flow_result = await options_agent.analyze(symbol.upper(), payload["contracts"], filters)
+    payload["analysis"] = asdict(flow_result)
+    return payload
 
 
 @app.post("/orders")
@@ -111,4 +155,3 @@ async def backtest(request: BacktestRequest) -> dict:
         "trades": [asdict(trade) for trade in result.trades],
         "equity_curve": result.equity_curve.tail(500).to_dict(),
     }
-

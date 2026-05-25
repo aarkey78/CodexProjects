@@ -15,6 +15,7 @@ from agents.technical_agent import TechnicalAnalysisAgent
 from agents.volume_agent import VolumeAgent
 from config.settings import Settings
 from data.alpha_vantage_client import AlphaVantageClient
+from data.options_client import AlpacaOptionsClient
 from strategies.momentum_strategy import MomentumStrategy
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ class VibeTradingOrchestrator:
         self.volume = VolumeAgent()
         self.technical = TechnicalAnalysisAgent()
         self.sentiment = SentimentAgent(settings, market_data)
-        self.options_flow = OptionsFlowAgent()
+        self.options_flow = OptionsFlowAgent(AlpacaOptionsClient(settings))
         self.risk = RiskAgent(settings)
         self.journal = JournalAgent()
         self.strategy = MomentumStrategy()
@@ -104,4 +105,3 @@ class VibeTradingOrchestrator:
         payload = asdict(signal)
         payload["created_at"] = signal.created_at.isoformat()
         return payload
-
