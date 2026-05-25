@@ -4,7 +4,13 @@ import pytest
 
 from agents.options_flow_agent import OptionsFlowAgent
 from config.settings import Settings
-from data.options_client import AlpacaOptionsClient, OptionsChainFilters, parse_option_symbol, summarize_options_activity
+from data.options_client import (
+    AlpacaOptionsClient,
+    OptionsChainFilters,
+    is_monthly_expiration,
+    parse_option_symbol,
+    summarize_options_activity,
+)
 
 
 def test_parse_option_symbol() -> None:
@@ -28,6 +34,7 @@ def test_summarize_options_activity_bias() -> None:
     assert summary["flow_bias"] == "call_heavy"
     assert summary["call_put_premium_ratio"] == 5.0
     assert summary["top_contract"] == "CALL1"
+    assert "monthly_expiration_pressure_score" in summary
 
 
 @pytest.mark.asyncio
@@ -49,6 +56,11 @@ async def test_options_client_mock_chain_filters() -> None:
     assert "call_put_premium_ratio" in payload["summary"]
 
 
+def test_is_monthly_expiration() -> None:
+    assert is_monthly_expiration(parse_option_symbol("SPY260619C00600000")["expiration_date"]) is True
+    assert is_monthly_expiration(parse_option_symbol("SPY260605C00600000")["expiration_date"]) is False
+
+
 @pytest.mark.asyncio
 async def test_options_flow_agent_scores_chain() -> None:
     chain = [
@@ -61,4 +73,3 @@ async def test_options_flow_agent_scores_chain() -> None:
     assert result.agent == "options_flow"
     assert result.passed is True
     assert result.features["flow_bias"] == "call_heavy"
-

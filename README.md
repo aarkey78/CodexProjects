@@ -73,6 +73,7 @@ curl http://localhost:8000/health
 curl "http://localhost:8000/scan?symbols=NVDA,TSLA,AMD"
 curl "http://localhost:8000/signals/NVDA"
 curl "http://localhost:8000/options/AAPL?expiration_days=45&option_type=all&min_unusual_score=60"
+curl "http://localhost:8000/candidates/momentum-options?symbols=NVDA,TSLA,AMD,AAPL,MSFT&monthly_only=true&min_score=55"
 curl -X POST http://localhost:8000/backtest -H "Content-Type: application/json" -d "{\"symbol\":\"NVDA\"}"
 ```
 
@@ -122,6 +123,31 @@ curl "http://localhost:8000/options/TSLA?option_type=call&expiration_days=30&min
 ```
 
 The dashboard includes the same filters in the sidebar. Activity scoring uses snapshot quote size, latest trade size, premium proxy, IV percentile, spread quality, and Greeks. It is useful for screening but should not be treated as full OPRA tape reconstruction.
+
+## Options Momentum Shortlist
+
+The candidate scanner combines monthly-expiration options pressure, open interest, Greeks, technical momentum, and relative volume into a ranked shortlist:
+
+```bash
+curl "http://localhost:8000/candidates/momentum-options?symbols=NVDA,TSLA,AMD,AAPL,MSFT,META,AMZN&expiration_days=65&monthly_only=true&min_score=55&limit=10"
+```
+
+Each candidate includes:
+
+- Final score and setup label: `DAY_TRADE_LONG`, `SWING_LONG`, `PUT_SIDE_PRESSURE`, `WATCH_ONLY`, or `AVOID_CHOP`
+- Options bias and monthly expiration pressure
+- Call/put premium and open-interest ratios
+- Average volume/open-interest ratio proxy
+- Technical confirmation, relative volume, RSI, latest price
+- Top contracts, risk notes, and score components
+
+Backtest the underlying-momentum baseline:
+
+```bash
+curl -X POST http://localhost:8000/backtest/options-momentum -H "Content-Type: application/json" -d "{\"symbol\":\"NVDA\",\"initial_capital\":100000,\"risk_per_trade_pct\":0.005}"
+```
+
+Full historical options/OI replay requires either stored daily option snapshots from this system or Alpha Vantage `HISTORICAL_OPTIONS` premium data. The platform includes hooks for both, so the one-month paper-trading period can become the first clean forward-test dataset.
 
 ## Testing
 

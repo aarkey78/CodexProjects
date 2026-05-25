@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from alerts.discord_alerts import DiscordAlerts
 from alerts.telegram_alerts import TelegramAlerts
+from agents.candidate_agent import CandidateScanConfig, OptionsMomentumCandidateAgent
 from agents.execution_agent import ExecutionAgent
 from agents.options_flow_agent import OptionsFlowAgent
 from backtesting.engine import BacktestConfig, BacktestEngine
@@ -27,6 +28,7 @@ market_data = AlphaVantageClient(settings, cache)
 broker = AlpacaTradingClient(settings)
 options_client = AlpacaOptionsClient(settings)
 options_agent = OptionsFlowAgent(options_client)
+candidate_agent = OptionsMomentumCandidateAgent(settings, market_data, options_client)
 orchestrator = VibeTradingOrchestrator(settings, market_data)
 execution_agent = ExecutionAgent(broker)
 telegram_alerts = TelegramAlerts(settings)
@@ -50,6 +52,13 @@ class BacktestRequest(BaseModel):
     initial_capital: float = 100_000
     risk_per_trade_pct: float = 0.005
     relative_volume_threshold: float = 3.0
+
+
+class OptionsMomentumBacktestRequest(BaseModel):
+    symbol: str
+    initial_capital: float = 100_000
+    risk_per_trade_pct: float = 0.005
+    relative_volume_threshold: float = 2.0
 
 
 @app.get("/health")
@@ -110,6 +119,8 @@ async def options_chain(
     min_gamma: float | None = Query(default=None, ge=0),
     max_gamma: float | None = Query(default=None, ge=0),
     min_unusual_score: float = Query(default=0.0, ge=0, le=100),
+    monthly_only: bool = False,
+    include_open_interest: bool = True,
     limit: int = Query(default=250, ge=1, le=2000),
 ) -> dict:
     filters = OptionsChainFilters(
@@ -125,12 +136,42 @@ async def options_chain(
         min_gamma=min_gamma,
         max_gamma=max_gamma,
         min_unusual_score=min_unusual_score,
+        monthly_only=monthly_only,
+        include_open_interest=include_open_interest,
         limit=limit,
     )
     payload = await options_client.get_chain(symbol.upper(), filters)
     flow_result = await options_agent.analyze(symbol.upper(), payload["contracts"], filters)
     payload["analysis"] = asdict(flow_result)
     return payload
+
+
+@app.get("/candidates/momentum-options")
+async def options_momentum_candidates(
+    symbols: str | None = Query(default=None, description="Comma-separated symbols"),
+    expiration_days: int = Query(default=65, ge=7, le=365),
+    monthly_only: bool = True,
+    min_score: float = Query(default=55.0, ge=0, le=100),
+    limit: int = Query(default=10, ge=1, le=50),
+    market_trend_bullish: bool = True,
+) -> dict:
+    selected = [item.strip().upper() for item in symbols.split(",") if item.strip()] if symbols else settings.watchlist_symbols
+    candidates = await candidate_agent.scan(
+        selected,
+        CandidateScanConfig(
+            expiration_days=expiration_days,
+            monthly_only=monthly_only,
+            min_score=min_score,
+            limit=limit,
+            market_trend_bullish=market_trend_bullish,
+        ),
+    )
+    return {
+        "symbols_scanned": selected,
+        "candidate_count": len(candidates),
+        "candidates": [candidate.as_dict() for candidate in candidates],
+        "paper_trading_note": "Use this shortlist for paper trades only until at least one month of journaled performance is reviewed.",
+    }
 
 
 @app.post("/orders")
@@ -154,4 +195,25 @@ async def backtest(request: BacktestRequest) -> dict:
         "report": result.report.as_dict() if result.report else {},
         "trades": [asdict(trade) for trade in result.trades],
         "equity_curve": result.equity_curve.tail(500).to_dict(),
+    }
+
+
+@app.post("/backtest/options-momentum")
+async def backtest_options_momentum(request: OptionsMomentumBacktestRequest) -> dict:
+    candles = await market_data.daily(request.symbol, outputsize="full")
+    config = BacktestConfig(
+        initial_capital=request.initial_capital,
+        risk_per_trade_pct=request.risk_per_trade_pct,
+        relative_volume_threshold=request.relative_volume_threshold,
+    )
+    result = BacktestEngine(config).run(request.symbol.upper(), candles)
+    return {
+        "symbol": request.symbol.upper(),
+        "report": result.report.as_dict() if result.report else {},
+        "trades": [asdict(trade) for trade in result.trades],
+        "equity_curve": result.equity_curve.tail(500).to_dict(),
+        "method_note": (
+            "This is the underlying momentum baseline. Full historical options/OI replay requires "
+            "stored daily options snapshots or Alpha Vantage HISTORICAL_OPTIONS premium data."
+        ),
     }

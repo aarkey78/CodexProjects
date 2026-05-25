@@ -7,6 +7,7 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
+from agents.candidate_agent import CandidateScanConfig, OptionsMomentumCandidateAgent
 from backtesting.engine import BacktestConfig, BacktestEngine
 from config.settings import get_settings
 from data.alpha_vantage_client import AlphaVantageClient
@@ -27,10 +28,11 @@ def resources():
     market_data = AlphaVantageClient(settings, cache)
     options_client = AlpacaOptionsClient(settings)
     orchestrator = VibeTradingOrchestrator(settings, market_data)
-    return settings, market_data, options_client, orchestrator
+    candidate_agent = OptionsMomentumCandidateAgent(settings, market_data, options_client)
+    return settings, market_data, options_client, orchestrator, candidate_agent
 
 
-settings, market_data, options_client, orchestrator = resources()
+settings, market_data, options_client, orchestrator, candidate_agent = resources()
 
 st.set_page_config(page_title="AI Momentum Trading", layout="wide")
 st.title("AI Momentum Trading Desk")
@@ -42,6 +44,7 @@ watchlist = st.sidebar.multiselect(
 )
 symbol = st.sidebar.selectbox("Symbol", watchlist or settings.watchlist_symbols)
 run_scan = st.sidebar.button("Run Scan", type="primary")
+run_candidates = st.sidebar.button("Shortlist Candidates")
 run_signal = st.sidebar.button("Generate Signal")
 run_backtest = st.sidebar.button("Run Backtest")
 
@@ -50,12 +53,19 @@ st.sidebar.subheader("Options")
 option_type = st.sidebar.selectbox("Type", ["all", "call", "put"], index=0)
 expiration_days = st.sidebar.slider("Expiration Days", min_value=1, max_value=180, value=45)
 min_unusual_score = st.sidebar.slider("Min Activity Score", min_value=0, max_value=100, value=50)
+options_monthly_only = st.sidebar.checkbox("Options Monthly Only", value=False)
 iv_range = st.sidebar.slider("IV Range", min_value=0.0, max_value=3.0, value=(0.0, 3.0), step=0.05)
 delta_range = st.sidebar.slider("Delta Range", min_value=-1.0, max_value=1.0, value=(-1.0, 1.0), step=0.05)
 gamma_range = st.sidebar.slider("Gamma Range", min_value=0.0, max_value=1.0, value=(0.0, 1.0), step=0.01)
 strike_min_input = st.sidebar.number_input("Min Strike", min_value=0.0, value=0.0, step=1.0)
 strike_max_input = st.sidebar.number_input("Max Strike", min_value=0.0, value=0.0, step=1.0)
 load_options = st.sidebar.button("Load Options")
+
+st.sidebar.divider()
+st.sidebar.subheader("Candidate Scan")
+candidate_min_score = st.sidebar.slider("Candidate Min Score", min_value=0, max_value=100, value=55)
+candidate_expiration_days = st.sidebar.slider("Candidate Expiration Days", min_value=14, max_value=180, value=65)
+candidate_monthly_only = st.sidebar.checkbox("Monthly Expirations Only", value=True)
 
 if run_scan:
     scan_results = run_async(orchestrator.scan(watchlist))
@@ -75,6 +85,58 @@ if run_scan:
         ),
         use_container_width=True,
     )
+
+if run_candidates:
+    st.subheader("Trade Candidates")
+    with st.spinner("Scanning options pressure, open interest, and technical momentum..."):
+        candidates = run_async(
+            candidate_agent.scan(
+                watchlist,
+                CandidateScanConfig(
+                    expiration_days=candidate_expiration_days,
+                    monthly_only=candidate_monthly_only,
+                    min_score=float(candidate_min_score),
+                    limit=10,
+                ),
+            )
+        )
+    candidate_df = pd.DataFrame([candidate.as_dict() for candidate in candidates])
+    if candidate_df.empty:
+        st.warning("No candidates met the current score threshold.")
+    else:
+        table_columns = [
+            "symbol",
+            "final_score",
+            "setup",
+            "direction",
+            "trade_horizon",
+            "options_bias",
+            "monthly_expiration_pressure",
+            "technical_confirmation",
+            "relative_volume",
+            "rsi",
+            "latest_price",
+            "top_contract",
+            "top_unusual_activity_score",
+            "call_put_premium_ratio",
+            "call_put_open_interest_ratio",
+            "avg_volume_open_interest_ratio",
+            "reasoning",
+        ]
+        st.dataframe(
+            candidate_df[[column for column in table_columns if column in candidate_df.columns]],
+            use_container_width=True,
+            hide_index=True,
+        )
+        selected_candidate = st.selectbox("Candidate Detail", candidate_df["symbol"].tolist())
+        detail = candidate_df[candidate_df["symbol"] == selected_candidate].iloc[0].to_dict()
+        st.json(
+            {
+                "components": detail.get("components"),
+                "risk_notes": detail.get("risk_notes"),
+                "top_contracts": detail.get("top_contracts"),
+            }
+        )
 
 left, middle, right = st.columns([1.2, 1, 1])
 
@@ -123,6 +185,8 @@ if load_options:
         min_gamma=gamma_range[0],
         max_gamma=gamma_range[1],
         min_unusual_score=float(min_unusual_score),
+        monthly_only=options_monthly_only,
+        include_open_interest=True,
         limit=500,
     )
     try:
@@ -155,6 +219,9 @@ if load_options:
                 "vega",
                 "activity_proxy",
                 "premium_proxy",
+                "open_interest",
+                "volume_open_interest_ratio",
+                "monthly_expiration",
                 "unusual_activity_score",
                 "liquidity_bias",
             ]

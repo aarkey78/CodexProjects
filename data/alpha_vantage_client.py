@@ -142,6 +142,27 @@ class AlphaVantageClient:
                 return {"Rank A: Real-Time Performance": {"Technology": "0.85%", "Financials": "-0.15%"}}
             raise
 
+    async def historical_options(self, symbol: str, as_of_date: str | None = None) -> list[dict[str, Any]]:
+        """Fetch Alpha Vantage historical options chain when the account supports it."""
+
+        params = {
+            "function": "HISTORICAL_OPTIONS",
+            "symbol": symbol.upper(),
+        }
+        if as_of_date:
+            params["date"] = as_of_date
+        payload = await self._get(params, ttl_seconds=3600)
+        return payload.get("data", [])
+
+    async def realtime_volume_open_interest_ratio(self, symbol: str) -> dict[str, Any]:
+        """Fetch Alpha Vantage realtime option volume/open-interest ratio if available."""
+
+        params = {
+            "function": "REALTIME_VOLUME_OPEN_INTEREST_RATIO",
+            "symbol": symbol.upper(),
+        }
+        return await self._get(params, ttl_seconds=300)
+
     async def technical_indicator(
         self,
         symbol: str,
@@ -202,4 +223,3 @@ class AlphaVantageClient:
                 }
             )
         )
-
